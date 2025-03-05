@@ -98,8 +98,7 @@ class Block(nn.Module):
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
-        self.mlp = MLP(config) 
-        # self.mlp = SparseMLP(config)
+        self.mlp = MLP(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))
@@ -182,15 +181,13 @@ class GPT(nn.Module):
         x = self.transformer.drop(tok_emb + pos_emb)
 
         loss_list = []
-
         for block in self.transformer.h:
             x = block(x)
-
-            if targets is not None:
-                x2 = self.transformer.ln_f(x)
-                logits2 = self.lm_head(x2)
-                loss2 = F.cross_entropy(logits2.view(-1, logits2.size(-1)), targets.view(-1), ignore_index=-1)
-                loss_list.append(loss2)
+            
+            x2 = self.transformer.ln_f(x)
+            logits2 =  self.lm_head(x2)
+            loss2 = F.cross_entropy(logits2.view(-1, logits2.size(-1)), targets.view(-1), ignore_index=-1)
+            loss_list.append(loss2)
 
         x = self.transformer.ln_f(x)
 
@@ -326,7 +323,7 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.config.block_size else idx[:, -self.config.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits = self(idx_cond)[0]
+            logits, _ = self(idx_cond)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options

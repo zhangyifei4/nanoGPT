@@ -218,12 +218,23 @@ def estimate_loss():
     model.eval()
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
+        lyr_losses = []
         for k in range(eval_iters):
             X, Y = get_batch(split)
+
             with ctx:
-                logits, loss = model(X, Y)
+                logits, loss, loss_list = model(X, Y)
+            
+            for lyr in range(len(loss_list)):
+                if len(lyr_losses) <= lyr: 
+                    lyr_losses.append(torch.zeros(eval_iters))
+                lyr_losses[lyr][k] = loss_list[lyr].item()
+
             losses[k] = loss.item()
         out[split] = losses.mean()
+        for lyr in range(len(lyr_losses)): 
+            out[split+'_'+str(lyr)] = lyr_losses[lyr].mean()
+
     model.train()
     return out
 
@@ -263,6 +274,17 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        loss_str = ''
+        for loss_key in losses:
+            if loss_key !='train' and loss_key!='val':
+                loss_str = loss_str + str(losses[loss_key].tolist())+', '
+        print('  layers:', loss_str)
+        csv_path = os.path.join(out_dir, 'train_val_list.csv')
+        if iter_num == 0:
+            os.remove(csv_path) if os.path.exists(csv_path) else None
+        with open(csv_path, 'a', encoding='utf-8') as file:
+            file.write(loss_str[:-1]+'\n')
+
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
@@ -271,18 +293,22 @@ while True:
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
             })
+        checkpoint = {
+            'model': raw_model.state_dict(),
+            'optimizer': optimizer.state_dict(),
+            'model_args': model_args,
+            'iter_num': iter_num,
+            'best_val_loss': best_val_loss,
+            'losses': losses,
+            'config': config,
+        }
+        print(f"saving final stage to {out_dir}")
+        torch.save(checkpoint, os.path.join(out_dir, 'fnst.pt')) # final point
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
-                checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
-                    'model_args': model_args,
-                    'iter_num': iter_num,
-                    'best_val_loss': best_val_loss,
-                    'config': config,
-                }
-                print(f"saving checkpoint to {out_dir}")
+                checkpoint['best_val_loss'] = best_val_loss
+                print(f"saving check point to {out_dir}")
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
@@ -297,7 +323,7 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = model(X, Y)
+            logits, loss, loss_list = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
