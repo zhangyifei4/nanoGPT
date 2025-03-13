@@ -125,13 +125,11 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
-        the_block = Block(config)
-
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([the_block for _ in range(config.n_layer)]),
+            the_block = Block(config),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -184,16 +182,32 @@ class GPT(nn.Module):
 
         loss_list = []
 
-        for block in self.transformer.h:
-            x = block(x)
+        for _ in range(self.config.n_layer):
+            x = self.transformer.the_block(x)
 
             if targets is not None:
+                # 生成随机数决定是否提前退出
+                # if torch.rand(1).item() < 0.33:
+                #     break # 提前退出时返回当前结果
                 x2 = self.transformer.ln_f(x)
                 logits2 = self.lm_head(x2)
                 loss2 = F.cross_entropy(logits2.view(-1, logits2.size(-1)), targets.view(-1), ignore_index=-1)
                 loss_list.append(loss2)
 
-        x = self.transformer.ln_f(x)
+        xrst=x
+
+        # Overdrive: val more layer in val mode
+        if targets is not None:
+            for _ in range(2):
+                x = self.transformer.the_block(x)
+
+                x2 = self.transformer.ln_f(x)
+                logits2 = self.lm_head(x2)
+                loss2 = F.cross_entropy(logits2.view(-1, logits2.size(-1)), targets.view(-1), ignore_index=-1)
+                loss_list.append(loss2)
+
+
+        x = self.transformer.ln_f(xrst)
 
         if targets is not None:
             # if we are given some desired targets also calculate the loss
